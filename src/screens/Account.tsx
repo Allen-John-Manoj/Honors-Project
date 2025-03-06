@@ -5,7 +5,7 @@ import { Dimensions } from "react-native";
 
 export default function App() {
   const [selectedRange, setSelectedRange] = useState("Month");
-  const [activeTab, setActiveTab] = useState("Account");
+  const [activeTab, setActiveTab] = useState("Account"); // Tracks which tab is active
 
   // Example data (modify with actual data)
   const chartData = {
@@ -30,17 +30,17 @@ export default function App() {
 
       {/* Header */}
       <View style={styles.header}>
-        <Image
-          source={require("./src/assets/images/logo.png")}
-          style={[styles.logoImage, { tintColor: "#4CAF50" }]}
+        <Image 
+          source={require("./src/assets/images/logo.png")}  
+          style={[styles.logoImage, { tintColor: "#4CAF50" }]} 
           resizeMode="contain"
         />
       </View>
 
-      {/* Main Content */}
+      {/* Main Content Based on Active Tab */}
       <ScrollView style={styles.scrollView}>
         <View style={styles.contentContainer}>
-          {/* Show full content if 'Account' tab is selected */}
+
           {activeTab === "Account" && (
             <>
               {/* Net Worth Section */}
@@ -55,10 +55,7 @@ export default function App() {
               <View style={styles.recentTransactionsContainer}>
                 <View style={styles.totalsRow}>
                   <Text style={styles.totalsLabel}>RECENT TRANSACTIONS</Text>
-                  <TouchableOpacity
-                    style={styles.addMoreButton}
-                    onPress={() => setActiveTab("Transactions")}
-                  >
+                  <TouchableOpacity style={styles.addMoreButton}>
                     <Text style={styles.addMoreText}>More</Text>
                   </TouchableOpacity>
                 </View>
@@ -79,28 +76,12 @@ export default function App() {
                     <Text style={[styles.tileValue, styles.expenseText]}>₹-3,200</Text>
                   </View>
                 </View>
-
-                <View style={styles.tileRow}>
-                  <View style={[styles.transactionTile, styles.expenseTile]}>
-                    <Text style={styles.tileTitle}>TRANSPORT</Text>
-                    <Text style={[styles.tileValue, styles.expenseText]}>₹-1,000</Text>
-                  </View>
-
-                  <View style={[styles.transactionTile, styles.incomeTile]}>
-                    <Text style={styles.tileTitle}>GIFT</Text>
-                    <Text style={[styles.tileValue, styles.incomeText]}>₹5,000</Text>
-                  </View>
-
-                  <TouchableOpacity
-                    style={styles.transactionTile}
-                    onPress={() => setActiveTab("Transactions")}
-                  >
-                    <Text style={styles.moreIndicator}>+</Text>
-                  </TouchableOpacity>
-                </View>
               </View>
+            </>
+          )}
 
-              {/* Trends Section */}
+          {activeTab === "Graphs" && (
+            <>
               <Text style={styles.totalsLabel}>TRENDS</Text>
               <View style={styles.trendsContainer}>
                 <View style={styles.toggleRow}>
@@ -126,141 +107,108 @@ export default function App() {
                 </View>
 
                 {/* Graph */}
-                <TouchableOpacity
-                  style={styles.chartContainer}
-                  onPress={() => setActiveTab("Graphs")}
-                >
+                <View style={styles.chartContainer}>
                   <LineChart
                     data={chartData}
-                    width={Dimensions.get("window").width - 70} // Ensure it fits within the container
+                    width={Dimensions.get("window").width - 70}  
                     height={220}
                     yAxisSuffix="₹"
-                    yAxisInterval={1} // Ensure appropriate y-axis intervals
+                    yAxisInterval={1} 
                     chartConfig={{
                       backgroundColor: "#212121",
                       backgroundGradientFrom: "#212121",
                       backgroundGradientTo: "#212121",
-                      fillShadowGradientFromOpacity: 0.1, // Disable shading
-                      fillShadowGradientToOpacity: 0, // Disable shading
                       decimalPlaces: 0,
                       color: (opacity = 1) => `rgba(255, 255, 255, ${opacity})`,
                       labelColor: (opacity = 1) => `rgba(255, 255, 255, ${opacity})`,
                       style: { borderRadius: 15 },
-                      propsForDots: {
-                        r: "4",
-                        strokeWidth: "2",
-                      },
-                      propsForHorizontalLabels: {
-                        translateX: 0, // Ensures labels align correctly
-                      },
                     }}
                     bezier
                     style={{ borderRadius: 15 }}
                   />
-                </TouchableOpacity>
+                </View>
               </View>
             </>
           )}
 
-          {/* Show only text when 'Transactions', 'Graphs', or 'Forecast' is selected */}
           {activeTab === "Transactions" && (
-            <View style={styles.centeredContainer}>
-              <Text style={styles.redText}>TRANSACTIONS</Text>
-            </View>
-          )}
-
-          {activeTab === "Graphs" && (
-            <View style={styles.centeredContainer}>
-              <Text style={styles.redText}>GRAPHS</Text>
+            <View style={styles.transactionsScreen}>
+              <Text style={styles.screenTitle}>Transactions</Text>
+              {/* Add transaction-related content here */}
             </View>
           )}
 
           {activeTab === "Forecast" && (
-            <View style={styles.centeredContainer}>
-              <Text style={styles.redText}>FORECAST</Text>
+            <View style={styles.forecastScreen}>
+              <Text style={styles.screenTitle}>Forecast</Text>
+              {/* Add forecast-related content here */}
             </View>
           )}
+          
         </View>
       </ScrollView>
 
-
-
       {/* Bottom Navigation Bar */}
       <View style={styles.bottomNavContainer}>
-        {/* Account Tab */}
         <TouchableOpacity style={styles.navItem} onPress={() => setActiveTab("Account")}>
-          <View style={styles.navIconContainer}>
-            <Image
-              source={require("./src/assets/images/account.png")}
-              style={[styles.navIconImage, { tintColor: activeTab === "Account" ? "#4CAF50" : "#a8aeaa" }]}
-              resizeMode="contain"
-            />
-          </View>
+          <Image
+            source={require("./src/assets/images/account.png")}
+            style={[styles.navIconImage, { tintColor: activeTab === "Account" ? "#4CAF50" : "#a8aeaa" }]}
+          />
           {activeTab !== "Account" && <Text style={styles.navLabel}>Account</Text>}
         </TouchableOpacity>
 
-        {/* Transactions Tab */}
         <TouchableOpacity style={styles.navItem} onPress={() => setActiveTab("Transactions")}>
-          <View style={styles.navIconContainer}>
-            <Image
-              source={require("./src/assets/images/transactions.png")}
-              style={[styles.navIconImage, { tintColor: activeTab === "Transactions" ? "#4CAF50" : "#a8aeaa" }]}
-              resizeMode="contain"
-            />
-          </View>
+          <Image
+            source={require("./src/assets/images/transactions.png")}
+            style={[styles.navIconImage, { tintColor: activeTab === "Transactions" ? "#4CAF50" : "#a8aeaa" }]}
+          />
           {activeTab !== "Transactions" && <Text style={styles.navLabel}>Transactions</Text>}
         </TouchableOpacity>
 
-        {/* Forecast Tab */}
         <TouchableOpacity style={styles.navItem} onPress={() => setActiveTab("Forecast")}>
-          <View style={styles.navIconContainer}>
-            <Image
-              source={require("./src/assets/images/forecast.png")}
-              style={[styles.navIconImage, { tintColor: activeTab === "Forecast" ? "#4CAF50" : "#a8aeaa" }]}
-              resizeMode="contain"
-            />
-          </View>
+          <Image
+            source={require("./src/assets/images/forecast.png")}
+            style={[styles.navIconImage, { tintColor: activeTab === "Forecast" ? "#4CAF50" : "#a8aeaa" }]}
+          />
           {activeTab !== "Forecast" && <Text style={styles.navLabel}>Forecast</Text>}
         </TouchableOpacity>
 
-        {/* Graphs Tab */}
         <TouchableOpacity style={styles.navItem} onPress={() => setActiveTab("Graphs")}>
-          <View style={styles.navIconContainer}>
-            <Image
-              source={require("./src/assets/images/graphs.png")}
-              style={[styles.navIconImage, { tintColor: activeTab === "Graphs" ? "#4CAF50" : "#a8aeaa" }]}
-              resizeMode="contain"
-            />
-          </View>
+          <Image
+            source={require("./src/assets/images/graphs.png")}
+            style={[styles.navIconImage, { tintColor: activeTab === "Graphs" ? "#4CAF50" : "#a8aeaa" }]}
+          />
           {activeTab !== "Graphs" && <Text style={styles.navLabel}>Graphs</Text>}
         </TouchableOpacity>
       </View>
-
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  centeredContainer: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    height: Dimensions.get("window").height - 150, // Adjust to fit
-  },
-
-  redText: {
-    color: "red",
-    fontSize: 24,
+  screenTitle: {
+    color: "#ffffff",
+    fontSize: 20,
     fontWeight: "bold",
+    textAlign: "center",
+    marginTop: 20,
   },
-
+  transactionsScreen: {
+    alignItems: "center",
+    marginTop: 20,
+  },
+  forecastScreen: {
+    alignItems: "center",
+    marginTop: 20,
+  },
   chartContainer: {
     alignItems: "center", // Center the chart
     justifyContent: "center",
     width: "100%",
     marginTop: 10,
   },
-
+  
   trendsContainer: {
     marginTop: 20,
     padding: 15,
@@ -341,7 +289,7 @@ const styles = StyleSheet.create({
     textAlign: "right",
     marginTop: 10,
   },
-
+ 
   tileTitle: {
     color: "#a8aeaa",
     fontSize: 12,
@@ -359,7 +307,7 @@ const styles = StyleSheet.create({
   expenseText: {
     color: "#E53935", // Red text for expenses
   },
-
+  
   netWorthContainer: {
     marginTop: 10,
   },
@@ -439,7 +387,7 @@ const styles = StyleSheet.create({
   expensesSection: {
     marginVertical: 15,
   },
-
+  
   // Bottom Navigation Bar Styles
   bottomNavContainer: {
     flexDirection: "row",
@@ -468,7 +416,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginBottom: 2,
   },
-
+  
   navIconImage: {
     width: 24,
     height: 24,
