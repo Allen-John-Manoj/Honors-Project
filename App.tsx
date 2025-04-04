@@ -113,28 +113,29 @@ const ProjectedNetWorth: React.FC<{ transactions: Transaction[] }> = ({ transact
   );
 
   return (
-    <View style={styles.projectionContainer}>
-      <View style={styles.currentRow}>
-        <Text style={styles.currentLabel}>Current:</Text>
-        <Text style={styles.currentValue}>${currentNet.toFixed(2)}</Text>
-      </View>
-
-      <View style={styles.projectionRow}>
-        <Text style={styles.projectionLabel}>30 Day Projection:</Text>
+    <View>
+      <View>
+        <Text style={[styles.totalsLabel, { fontSize: 15 }]}>30 DAY PROJECTION:</Text>
         <View style={styles.projectionValueContainer}>
           <Text style={[
             styles.projectionValue,
+            { fontSize: 38, fontWeight: "bold" },
             dailyChange >= 0 ? styles.positive : styles.negative
           ]}>
-            ${projectedNet.toFixed(2)}
+            {projectedNet >= 100000
+              ? `₹${(projectedNet / 100000).toFixed(2)}L`
+              : projectedNet >= 1000
+                ? `₹${(projectedNet / 1000).toFixed(2)}K`
+                : `₹${projectedNet}`
+            }
             {dailyChange >= 0 ? ' ▲' : ' ▼'}
           </Text>
         </View>
       </View>
 
-      <Text style={styles.trendText}>
+      <Text style={[styles.trendText, { fontSize: 15 }]}>
         {dailyChange >= 0 ? 'Increasing' : 'Decreasing'} by
-        ${Math.abs(dailyChange).toFixed(2)}/day
+        ₹{Math.abs(dailyChange).toFixed(2)}/day
       </Text>
     </View>
   );
@@ -710,6 +711,82 @@ export default function App() {
     });
   };
 
+  const calculateCategoryForecast = (type: 'income' | 'expense') => {
+    const today = new Date();
+    const currentMonth = today.getMonth();
+    const currentYear = today.getFullYear();
+
+    // Get all transactions of the specified type
+    const typeTransactions = transactions.filter(t => t.type === type);
+
+    // Group by category
+    const categories: { [key: string]: Transaction[] } = {};
+    typeTransactions.forEach(t => {
+      if (!categories[t.category]) {
+        categories[t.category] = [];
+      }
+      categories[t.category].push(t);
+    });
+
+    const result = [];
+
+    for (const category in categories) {
+      const categoryTransactions = categories[category];
+
+      // Filter current month transactions
+      const currentMonthTransactions = categoryTransactions.filter(t => {
+        const date = new Date(t.date);
+        return date.getMonth() === currentMonth && date.getFullYear() === currentYear;
+      });
+      const currentAmount = currentMonthTransactions.reduce((sum, t) => sum + Math.abs(t.amount), 0);
+
+      // Filter historical transactions (excluding current month)
+      const historicalTransactions = categoryTransactions.filter(t => {
+        const date = new Date(t.date);
+        return !(date.getMonth() === currentMonth && date.getFullYear() === currentYear);
+      });
+
+      // Group historical by month to calculate monthly averages
+      const monthlyTotals: { [key: string]: number } = {};
+      historicalTransactions.forEach(t => {
+        const date = new Date(t.date);
+        const monthKey = `${date.getFullYear()}-${date.getMonth()}`;
+        monthlyTotals[monthKey] = (monthlyTotals[monthKey] || 0) + Math.abs(t.amount);
+      });
+
+      const monthlyAmounts = Object.values(monthlyTotals);
+      const monthsCount = monthlyAmounts.length;
+      const averageAmount = monthsCount > 0 ?
+        monthlyAmounts.reduce((sum, amount) => sum + amount, 0) / monthsCount :
+        0;
+
+      // Calculate percentage change
+      let percentageChange = 0;
+      if (averageAmount > 0) {
+        percentageChange = ((currentAmount - averageAmount) / averageAmount) * 100;
+      } else if (currentAmount > 0) {
+        percentageChange = 100; // Infinite growth from 0
+      }
+
+      result.push({
+        name: category,
+        currentAmount,
+        averageAmount,
+        percentageChange,
+        monthsCount
+      });
+    }
+
+    // Sort by percentage change (most improved first for income, most reduced first for expenses)
+    return result.sort((a, b) => {
+      if (type === 'income') {
+        return b.percentageChange - a.percentageChange;
+      } else {
+        return a.percentageChange - b.percentageChange;
+      }
+    });
+  };
+
   // Helper function to render percentage indicators
   const renderPercentageIndicator = (
     label: string,
@@ -1222,12 +1299,67 @@ export default function App() {
 
           {activeTab === "Forecast" && (
             <View style={styles.forecastContainer}>
-              <Text style={styles.sectionHeader}>FINANCIAL FORECAST</Text>
-              <View style={styles.forecastCard}>
-                <Text style={styles.cardTitle}>Projected Net Worth</Text>
+              <View style={[styles.netWorthBox, { marginTop: -5 }]}>
                 <ProjectedNetWorth transactions={transactions} />
-                <Text style={styles.cardSubtitle}>Next 30 Days</Text>
               </View>
+
+              {/* Category-wise Forecast */}
+              <ScrollView style={styles.categoryScrollView}>
+                {/* Income Categories */}
+                <Text style={[styles.totalsLabel, { marginBottom: 10 }]}>INCOME CATEGORIES</Text>
+                <View style={styles.categorySection}>
+                  {calculateCategoryForecast('income').length > 0 ? (
+                    calculateCategoryForecast('income').map((category, index) => (
+                      <View key={`income-${index}`} style={styles.categoryItem}>
+                        <Text style={styles.categoryName}>{category.name}</Text>
+                        <View style={styles.categoryDetails}>
+                          <Text style={styles.categoryAmount}>₹{category.currentAmount.toFixed(2)}</Text>
+                          <Text style={[
+                            styles.categoryComparison,
+                            category.percentageChange >= 0 ? styles.positive : styles.negative
+                          ]}>
+                            {category.percentageChange >= 0 ? '▲' : '▼'}
+                            {Math.abs(category.percentageChange).toFixed(1)}%
+                          </Text>
+                        </View>
+                        <Text style={styles.categoryAverage}>
+                          Avg: ₹{category.averageAmount.toFixed(2)} (past {category.monthsCount} months)
+                        </Text>
+                      </View>
+                    ))
+                  ) : (
+                    <Text style={styles.noDataText}>No income data available</Text>
+                  )}
+                </View>
+
+                {/* Expense Categories */}
+                <Text style={[styles.totalsLabel, { marginBottom: 10 }]}>EXPENSE CATEGORIES</Text>
+                <View style={styles.categorySection}>
+
+                  {calculateCategoryForecast('expense').length > 0 ? (
+                    calculateCategoryForecast('expense').map((category, index) => (
+                      <View key={`expense-${index}`} style={styles.categoryItem}>
+                        <Text style={styles.categoryName}>{category.name}</Text>
+                        <View style={styles.categoryDetails}>
+                          <Text style={styles.categoryAmount}>₹{category.currentAmount.toFixed(2)}</Text>
+                          <Text style={[
+                            styles.categoryComparison,
+                            category.percentageChange >= 0 ? styles.negative : styles.positive
+                          ]}>
+                            {category.percentageChange >= 0 ? '▲' : '▼'}
+                            {Math.abs(category.percentageChange).toFixed(1)}%
+                          </Text>
+                        </View>
+                        <Text style={styles.categoryAverage}>
+                          Avg: ₹{category.averageAmount.toFixed(2)} (past {category.monthsCount} months)
+                        </Text>
+                      </View>
+                    ))
+                  ) : (
+                    <Text style={styles.noDataText}>No expense data available</Text>
+                  )}
+                </View>
+              </ScrollView>
             </View>
           )}
         </View>
@@ -1527,6 +1659,59 @@ export default function App() {
 const screenWidth = Dimensions.get('window').width;
 
 const styles = StyleSheet.create({
+  categoryScrollView: {
+    maxHeight: Dimensions.get('window').height * 0.4,
+    marginTop: 20,
+  },
+  categorySection: {
+    marginBottom: 25,
+    backgroundColor: '#343635',
+    borderRadius: 15,
+    padding: 15,
+  },
+  categorySectionTitle: {
+    color: '#07a69b',
+    fontSize: 16,
+    fontWeight: 'bold',
+    marginBottom: 15,
+    textAlign: 'center',
+  },
+  categoryItem: {
+    marginBottom: 15,
+    paddingBottom: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: '#505050',
+  },
+  categoryName: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '500',
+    marginBottom: 5,
+  },
+  categoryDetails: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 5,
+  },
+  categoryAmount: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+  categoryComparison: {
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  categoryAverage: {
+    color: '#a8aeaa',
+    fontSize: 12,
+  },
+  noDataText: {
+    color: '#a8aeaa',
+    textAlign: 'center',
+    marginVertical: 10,
+  },
   projectionContainer: {
     padding: 16,
     backgroundColor: '#f8f9fa',
@@ -1587,7 +1772,7 @@ const styles = StyleSheet.create({
     marginVertical: 16,
   },
   forecastContainer: {
-    padding: 15,
+    padding: 1,
     paddingBottom: 80,
   },
   sectionHeader: {
