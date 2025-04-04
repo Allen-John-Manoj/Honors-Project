@@ -33,6 +33,113 @@ function assertTransactionType(type: string): asserts type is Transaction["type"
   }
 }
 
+class SimpleLinearRegression {
+  private slope: number = 0;
+  private intercept: number = 0;
+
+  train(X: number[], y: number[]): void {
+    const n = X.length;
+    const sumX = X.reduce((a, b) => a + b, 0);
+    const sumY = y.reduce((a, b) => a + b, 0);
+    const sumXY = X.reduce((a, _, i) => a + X[i] * y[i], 0);
+    const sumX2 = X.reduce((a, b) => a + b * b, 0);
+
+    const denominator = n * sumX2 - sumX * sumX;
+    if (denominator === 0) return; // Prevent division by zero
+
+    this.slope = (n * sumXY - sumX * sumY) / denominator;
+    this.intercept = (sumY - this.slope * sumX) / n;
+  }
+
+  predict(x: number): number {
+    return this.slope * x + this.intercept;
+  }
+}
+
+const useCalculateProjection = (transactions: Transaction[]) => {
+  const calculateProjection = () => {
+    if (transactions.length < 2) return {
+      currentNet: 0,
+      projectedNet: 0,
+      dailyChange: 0
+    };
+
+    // Get valid transactions sorted by date
+    const validTransactions = transactions
+      .filter(t => t.date && !isNaN(new Date(t.date).getTime()))
+      .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+    // Get first and last balance values
+    const firstTransaction = validTransactions[0];
+    const lastTransaction = validTransactions[validTransactions.length - 1];
+    const currentNet = lastTransaction.runningBalance;
+
+    // Calculate days between first and last transaction
+    const startDate = new Date(firstTransaction.date);
+    const endDate = new Date(lastTransaction.date);
+    const daysBetween = Math.ceil(
+      (endDate.getTime() - startDate.getTime()) / (1000 * 3600 * 24)
+    );
+
+    // Calculate total balance change
+    const balanceChange = lastTransaction.runningBalance - firstTransaction.runningBalance;
+
+    // Calculate daily change rate
+    const dailyChange = daysBetween > 0 ? balanceChange / daysBetween : 0;
+
+    // Project 30 days from last transaction date
+    const projectedNet = currentNet + (dailyChange * 30);
+
+    return {
+      currentNet,
+      projectedNet,
+      dailyChange
+    };
+  };
+
+  return calculateProjection();
+};
+
+// Modified ProjectedNetWorth component
+const ProjectedNetWorth: React.FC<{ transactions: Transaction[] }> = ({ transactions }) => {
+  const { currentNet, projectedNet, dailyChange } = useCalculateProjection(transactions);
+
+  if (!transactions.length) return (
+    <Text style={styles.infoText}>Add at least 2 transactions to see forecasts</Text>
+  );
+
+  if (transactions.length === 1) return (
+    <Text style={styles.infoText}>Add one more transaction to enable predictions</Text>
+  );
+
+  return (
+    <View style={styles.projectionContainer}>
+      <View style={styles.currentRow}>
+        <Text style={styles.currentLabel}>Current:</Text>
+        <Text style={styles.currentValue}>${currentNet.toFixed(2)}</Text>
+      </View>
+
+      <View style={styles.projectionRow}>
+        <Text style={styles.projectionLabel}>30 Day Projection:</Text>
+        <View style={styles.projectionValueContainer}>
+          <Text style={[
+            styles.projectionValue,
+            dailyChange >= 0 ? styles.positive : styles.negative
+          ]}>
+            ${projectedNet.toFixed(2)}
+            {dailyChange >= 0 ? ' ▲' : ' ▼'}
+          </Text>
+        </View>
+      </View>
+
+      <Text style={styles.trendText}>
+        {dailyChange >= 0 ? 'Increasing' : 'Decreasing'} by
+        ${Math.abs(dailyChange).toFixed(2)}/day
+      </Text>
+    </View>
+  );
+};
+
 const loadTransactions = () => {
   try {
     const stored = storage.getString('transactions');
@@ -80,6 +187,13 @@ export default function App() {
   useEffect(() => {
     processFinancialData(transactions);
   }, [transactions]); // Process whenever transactions change
+  useEffect(() => {
+    // This will automatically trigger model retraining
+    // whenever transactions change
+    if (transactions.length > 1) {
+      // Optional: You can add any pre-processing here
+    }
+  }, [transactions]);
 
   useEffect(() => {
     const uniqueCategories = Array.from(
@@ -665,46 +779,6 @@ export default function App() {
     });
   };
 
-  const ProjectedNetWorth = () => {
-    const [projectedNetWorth, setProjectedNetWorth] = useState<string | null>(null);
-
-    useEffect(() => {
-      const fetchProjectedNetWorth = async () => {
-        const projected = await calculateProjectedNetWorthML();
-        setProjectedNetWorth(formatNetWorth(projected));
-      };
-
-      fetchProjectedNetWorth();
-    }, []);
-
-    if (projectedNetWorth === null) {
-      return <Text style={styles.projectedValue}>Loading...</Text>;
-    }
-
-    return <Text style={styles.projectedValue}>{projectedNetWorth}</Text>;
-  };
-
-
-  const calculateProjectedNetWorthML = async () => {
-    const { amounts, dates } = prepareData(transactions);
-    const model = await trainModel(amounts, dates);
-
-    const futureDates = Array.from({ length: 30 }, (_, i) =>
-      new Date().getTime() + (i + 1) * 86400000
-    );
-
-    const predictions = await predictFutureTransactions(model, futureDates);
-
-    // Ensure predictions is treated as number[][]
-    if (Array.isArray(predictions)) {
-      const totalProjected = predictions.reduce((sum, p) => sum + (Array.isArray(p) ? p[0] : p), 0);
-      return netWorth + totalProjected;
-    }
-
-    return netWorth; // Fallback if predictions is not an array
-  };
-
-
   return (
     <View style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor="#212121" />
@@ -1149,10 +1223,9 @@ export default function App() {
           {activeTab === "Forecast" && (
             <View style={styles.forecastContainer}>
               <Text style={styles.sectionHeader}>FINANCIAL FORECAST</Text>
-
               <View style={styles.forecastCard}>
                 <Text style={styles.cardTitle}>Projected Net Worth</Text>
-                <ProjectedNetWorth />
+                <ProjectedNetWorth transactions={transactions} />
                 <Text style={styles.cardSubtitle}>Next 30 Days</Text>
               </View>
             </View>
@@ -1317,13 +1390,20 @@ export default function App() {
                 const updatedTransactions = [...currentTransactions, newTransaction]
                   .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
                 // When adding a new transaction (in your confirm button handler):
+                // Modify this section in your onPress handler:
                 const processedData = [...currentTransactions, newTransaction]
                   .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
-                // Group and sum same-day transactions first
+                // Add this validation for better data integrity
+                const validatedData = processedData.filter(t =>
+                  !isNaN(new Date(t.date).getTime()) &&
+                  typeof t.amount === 'number'
+                );
+
+                // Then use validatedData instead of processedData
                 const groupedByDate: { [date: string]: Transaction[] } = {};
-                processedData.forEach(t => {
-                  const dateKey = t.date; // YYYY-MM-DD format
+                validatedData.forEach(t => {
+                  const dateKey = t.date;
                   if (!groupedByDate[dateKey]) {
                     groupedByDate[dateKey] = [];
                   }
@@ -1447,6 +1527,65 @@ export default function App() {
 const screenWidth = Dimensions.get('window').width;
 
 const styles = StyleSheet.create({
+  projectionContainer: {
+    padding: 16,
+    backgroundColor: '#f8f9fa',
+    borderRadius: 8,
+    marginVertical: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  projectionValueContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  currentRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  currentLabel: {
+    fontSize: 16,
+    color: '#666',
+  },
+  currentValue: {
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  projectionRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  projectionLabel: {
+    fontSize: 18,
+    color: '#333',
+  },
+  projectionValue: {
+    fontSize: 20,
+    fontWeight: '700',
+  },
+  positive: {
+    color: '#2ecc71', // Green
+  },
+  negative: {
+    color: '#e74c3c', // Red
+  },
+  trendText: {
+    fontSize: 14,
+    color: '#888',
+    textAlign: 'right',
+  },
+  infoText: {
+    fontSize: 16,
+    color: '#999',
+    textAlign: 'center',
+    marginVertical: 16,
+  },
   forecastContainer: {
     padding: 15,
     paddingBottom: 80,
