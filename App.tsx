@@ -1,4 +1,7 @@
 import React, { useState, useEffect } from "react";
+import { PermissionsAndroid, Platform } from 'react-native';
+import SmsAndroid from 'react-native-get-sms-android';
+import { DeviceEventEmitter } from 'react-native';
 import {
   View,
   Text,
@@ -13,7 +16,6 @@ import {
 import { LineChart, PieChart } from "react-native-chart-kit";
 import { MMKV } from 'react-native-mmkv';
 import { Alert } from 'react-native';
-import * as tf from '@tensorflow/tfjs';
 import '@tensorflow/tfjs-react-native';
 import { Dimensions } from "react-native";
 import { Picker } from "@react-native-picker/picker"; // Added Picker import
@@ -26,13 +28,37 @@ type Transaction = {
   runningBalance: number;
   description: string; // Required property
 };
-const storage = new MMKV();
-function assertTransactionType(type: string): asserts type is Transaction["type"] {
-  if (!["income", "expense", "balance"].includes(type)) {
-    throw new Error(`Invalid transaction type: ${type}`);
-  }
+interface SmsMessage {
+  _id: string;
+  body: string;
+  date: string;
+  address: string;
 }
 
+interface TransactionFromSMS {
+  id: string;
+  amount: number;
+  date: string;
+  type: 'income' | 'expense';
+  body: string;
+}
+
+interface SmsMessage {
+  _id: string;
+  body: string;
+  date: string;
+}
+
+// Add this near your other type definitions
+interface TransactionFromSMS {
+  id: string;
+  amount: number;
+  date: string;
+  type: 'income' | 'expense';
+  body: string;
+}
+
+const storage = new MMKV();
 class SimpleLinearRegression {
   public slope: number = 0;
   private intercept: number = 0;
@@ -55,6 +81,7 @@ class SimpleLinearRegression {
     return this.slope * x + this.intercept;
   }
 }
+
 
 const useCalculateProjection = (transactions: Transaction[]) => {
   const calculateProjection = () => {
@@ -109,7 +136,7 @@ const ProjectedNetWorth: React.FC<{ transactions: Transaction[] }> = ({ transact
     <Text style={styles.infoText}>Add at least 5 transactions to see forecasts</Text>
   );
 
-  if (transactions.length === 4) return (
+  if (transactions.length <= 4) return (
     <Text style={styles.infoText}>Add one more transaction to enable predictions</Text>
   );
 
@@ -147,6 +174,19 @@ const ProjectedNetWorth: React.FC<{ transactions: Transaction[] }> = ({ transact
   );
 };
 
+// ⏱ Ensure checkpoint only initialized once
+const ensureCheckpoint = () => {
+  const existing = storage.getNumber('lastCheckpoint');
+  if (!existing) {
+    const now = Date.now();
+    console.log('🆕 First-time install, setting checkpoint:', now);
+    storage.set('lastCheckpoint', now);
+  } else {
+    console.log('📌 Existing checkpoint:', existing);
+  }
+};
+
+
 const loadTransactions = () => {
   try {
     const stored = storage.getString('transactions');
@@ -179,10 +219,12 @@ export default function App() {
   const [chartData, setChartData] = useState<{ labels: string[]; datasets: any[] } | null>(null);
   const [netWorth, setNetWorth] = useState(0);
   const [transactions, setTransactions] = useState<Transaction[]>(loadTransactions);
-  const [showCategoryModal, setShowCategoryModal] = useState(false);
-  const [selectedCategoryType, setSelectedCategoryType] = useState<'income' | 'expense'>('income');
-
-
+  const [uncategorizedTransactions, setUncategorizedTransactions] = useState<TransactionFromSMS[]>([]);
+  const [currentSMSTransaction, setCurrentSMSTransaction] = useState<TransactionFromSMS | null>(null);
+  const [showSMSGreeting, setShowSMSGreeting] = useState(() => {
+    const stored = storage.getString('uncategorizedTransactions');
+    return !!stored && JSON.parse(stored).length > 0;
+  });
 
   // 4. Enhanced persistence
   useEffect(() => {
@@ -192,6 +234,13 @@ export default function App() {
       console.error('Failed to save transactions:', error);
     }
   }, [transactions]);
+  DeviceEventEmitter.addListener('sms_onReceive', (event) => {
+    console.log('New SMS Received:', event);
+    processSMS(); // Your processing function
+  });
+  useEffect(() => {
+    ensureCheckpoint();
+  }, []);
   useEffect(() => {
     storage.set('transactions', JSON.stringify(transactions));
   }, [transactions]);
@@ -205,6 +254,29 @@ export default function App() {
       // Optional: You can add any pre-processing here
     }
   }, [transactions]);
+  useEffect(() => {
+    const loadUncategorized = async () => {
+      const stored = storage.getString('uncategorizedTransactions');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (parsed.length > 0) {
+          setShowSMSGreeting(true);
+          setCurrentSMSTransaction(parsed[0]);
+        }
+      }
+    };
+
+    loadUncategorized();
+    processSMS();
+  }, []);
+
+  useEffect(() => {
+    const subscription = DeviceEventEmitter.addListener('sms_onReceive', () => {
+      console.log('SMS Received!');
+      processSMS();
+    });
+    return () => subscription.remove();
+  }, []);
 
   useEffect(() => {
     const uniqueCategories = Array.from(
@@ -213,6 +285,44 @@ export default function App() {
     setCategories(uniqueCategories);
   }, [transactions]);
   const [filteredTransactions, setFilteredTransactions] = useState<Transaction[]>([]);
+
+  // Add this useEffect to handle SMS transaction selection
+  useEffect(() => {
+    if (currentSMSTransaction) {
+      // Mark this SMS as processed
+      const processed = JSON.parse(storage.getString('processedSMS') || '[]');
+      storage.set('processedSMS', JSON.stringify([...processed, currentSMSTransaction.id]));
+
+      // Remove this transaction from uncategorized list
+      const remaining = uncategorizedTransactions.filter(
+        t => t.id !== currentSMSTransaction.id
+      );
+
+      // Update storage and state
+      storage.set('uncategorizedTransactions', JSON.stringify(remaining));
+      setUncategorizedTransactions(remaining);
+
+      // Move to next transaction if available
+      if (remaining.length > 0) {
+        setCurrentSMSTransaction(remaining[0]);
+        // Don't close the popup, just update it with the next transaction
+      } else {
+        setCurrentSMSTransaction(null);
+        setShowSMSGreeting(false);
+        setShowPopup(false);
+      }
+    }
+  }, [currentSMSTransaction]);
+  // Add at app startup:
+  useEffect(() => {
+    const checkPermissions = async () => {
+      const hasPermission = await requestSMSPermission();
+      if (!hasPermission) {
+        Alert.alert('Permission required', 'Enable SMS access in settings');
+      }
+    };
+    checkPermissions();
+  }, []);
 
   // Modify the filteredTransactions useEffect
   useEffect(() => {
@@ -262,6 +372,7 @@ export default function App() {
   const [greatestIncome, setGreatestIncome] = useState<{ category: string, amount: number }>({ category: "", amount: 0 });
   const [greatestExpense, setGreatestExpense] = useState<{ category: string, amount: number }>({ category: "", amount: 0 });
   const [showPopup, setShowPopup] = useState(false);
+  const [prefillData, setPrefillData] = useState<TransactionFromSMS | null>(null);
   const formatTableDate = (dateString: string) => {
     const date = new Date(dateString);
     return date.toLocaleDateString("en-US", {
@@ -269,6 +380,25 @@ export default function App() {
       day: "numeric"
     });
   };
+
+  useEffect(() => {
+    if (prefillData) {
+      setAmount(prefillData.amount.toString());
+      setDate(new Date(prefillData.date));
+      setTransactionType(prefillData.type);  // 👈 This is the key line
+    }
+  }, [prefillData]);
+
+  useEffect(() => {
+    console.log("Set transaction type from SMS:", prefillData?.type);
+  }, [transactionType]);
+
+
+  const markAsProcessed = (id: string) => {
+    const processed = JSON.parse(storage.getString('processedSMS') || '[]');
+    storage.set('processedSMS', JSON.stringify([...processed, id]));
+  };
+
   const processFinancialData = (data: Transaction[]) => {
     const currentDate = new Date();
 
@@ -342,55 +472,202 @@ export default function App() {
       .replace(" ", " ");
   };
 
-  const prepareData = (transactions: Transaction[]) => {
-    const data = transactions
-      .filter(t => t.type !== 'balance')
-      .map(t => ({
-        date: new Date(t.date).getTime(),
-        amount: t.amount,
-        type: t.type === 'income' ? 1 : 0
-      }));
-
-    const sortedData = data.sort((a, b) => a.date - b.date);
-    const amounts = sortedData.map(d => d.amount);
-    const dates = sortedData.map(d => d.date);
-    const types = sortedData.map(d => d.type);
-
-    return { amounts, dates, types };
-  };
-
-  // 2. Type validation helper
-  function assertTransactions(data: any): asserts data is Transaction[] {
-    if (!Array.isArray(data)) throw new Error('Invalid transaction data');
-    data.forEach(t => {
-      if (!['income', 'expense', 'balance'].includes(t.type)) {
-        throw new Error(`Invalid transaction type: ${t.type}`);
+  const requestSMSPermission = async () => {
+    if (Platform.OS === 'android') {
+      try {
+        const granted = await PermissionsAndroid.request(
+          PermissionsAndroid.PERMISSIONS.READ_SMS,
+          {
+            title: 'SMS Access Permission',
+            message: 'This app needs access to your SMS to automatically add transactions.',
+            buttonNeutral: 'Ask Me Later',
+            buttonNegative: 'Cancel',
+            buttonPositive: 'OK',
+          }
+        );
+        return granted === PermissionsAndroid.RESULTS.GRANTED;
+      } catch (err) {
+        console.error(err);
+        return false;
       }
-    });
-  }
-
-  const trainModel = async (amounts: number[], dates: number[]) => {
-    const model = tf.sequential();
-    model.add(tf.layers.dense({ units: 1, inputShape: [1] }));
-
-    model.compile({
-      optimizer: 'sgd',
-      loss: 'meanSquaredError'
-    });
-
-    const xs = tf.tensor2d(dates, [dates.length, 1]);
-    const ys = tf.tensor2d(amounts, [amounts.length, 1]);
-
-    await model.fit(xs, ys, { epochs: 100 });
-
-    return model;
+    }
+    return false;
   };
 
-  const predictFutureTransactions = async (model: tf.Sequential, futureDates: number[]) => {
-    const xs = tf.tensor2d(futureDates, [futureDates.length, 1]);
-    const predictions = model.predict(xs) as tf.Tensor;
-    return predictions.arraySync() as number[][]; // Explicitly cast to number[][]
+  const checkSMSPermissions = async () => {
+    if (Platform.OS === 'android') {
+      try {
+        const granted = await PermissionsAndroid.requestMultiple([
+          PermissionsAndroid.PERMISSIONS.READ_SMS,
+          PermissionsAndroid.PERMISSIONS.RECEIVE_SMS
+        ]);
+
+        if (
+          granted['android.permission.READ_SMS'] === PermissionsAndroid.RESULTS.GRANTED &&
+          granted['android.permission.RECEIVE_SMS'] === PermissionsAndroid.RESULTS.GRANTED
+        ) {
+          console.log('SMS permissions granted');
+          return true;
+        }
+        console.log('SMS permission denied');
+        return false;
+      } catch (err) {
+        console.warn(err);
+        return false;
+      }
+    }
+    return true;
   };
+
+
+
+  // Update the processSMS function
+  const processSMS = async () => {
+    console.log('🔔 SMS Processing Initiated');
+
+    try {
+      const hasPermission = await checkSMSPermissions();
+      if (!hasPermission) {
+        console.warn('🚫 SMS permissions not granted');
+        return;
+      }
+
+      const checkpoint = storage.getNumber('lastCheckpoint') || Date.now(); // fallback only on first boot
+      const filter = {
+        box: 'inbox',
+        maxCount: 100, // or whatever
+        minDate: checkpoint, // 👈 this ensures you only get newer SMS
+      };
+
+
+
+      SmsAndroid.list(
+        JSON.stringify(filter),
+        (error) => console.error('❌ SMS Fetch Error:', error),
+        async (count, smsList) => {
+          console.log(`📥 Received ${count} potential SMS transactions`);
+
+          try {
+            const messages: SmsMessage[] = JSON.parse(smsList);
+            console.log('🔍 Parsing SMS messages...');
+
+            const processedIds = new Set(
+              JSON.parse(storage.getString('processedSMS') || '[]')
+            );
+
+            const newTransactions = messages
+              .map((msg) => {
+                console.log(`✉️ Processing SMS ID: ${msg._id}`);
+                const transaction = parseSMSMessage(msg);
+
+                if (!transaction) {
+                  console.log(`⏩ Skipping non-transaction SMS: ${msg.body.substring(0, 30)}...`);
+                  return null;
+                }
+
+                console.log(`🆕 Potential Transaction Found:
+  - ID: ${transaction.id}
+  - Amount: ${transaction.amount}
+  - Type: ${transaction.type.toUpperCase()}
+  - Date: ${transaction.date}`);
+
+                return transaction;
+              })
+              .filter((t): t is TransactionFromSMS => {
+                const isNew = t !== null && !processedIds.has(t.id);
+                if (!isNew && t) {
+                  console.log(`♻️ Already processed transaction ID: ${t.id}`);
+                }
+                return isNew;
+              });
+
+            console.log(`✅ Found ${newTransactions.length} new transactions`);
+
+            // In processSMS function after finding newTransactions:
+            // Replace the existing newTransactions handling with:
+            if (newTransactions.length > 0) {
+              newTransactions.forEach((transaction, index) => {
+                Alert.alert(
+                  'Transaction Found!',
+                  `Add ${formatCurrency(transaction.amount)} ${transaction.type}?`,
+                  [
+                    {
+                      text: 'Ignore',
+                      onPress: () => markAsProcessed(transaction.id),
+                      style: 'cancel',
+                    },
+                    {
+                      text: 'Add',
+                      onPress: () => {
+                        setPrefillData(transaction);
+                        setShowPopup(true);
+                        markAsProcessed(transaction.id);
+                        if (index === newTransactions.length - 1) {
+                          // Final transaction processed
+                          storage.set('lastCheckpoint', Date.now());
+                        }
+                      },
+                    },
+                  ]
+                );
+              });
+            } else {
+              storage.set('lastCheckpoint', Date.now());
+            }
+          } catch (parseError) {
+            console.error('❌ SMS Parse Error:', parseError);
+          }
+        }
+      );
+    } catch (error) {
+      console.error('❌ SMS Processing Failed:', error);
+    }
+  };
+
+
+
+  const parseSMSMessage = (msg: SmsMessage): TransactionFromSMS | null => {
+    if (!msg.body) return null;
+
+    // Match first number that looks like amount (after Rs or INR)
+    const amountMatch = msg.body.match(/(?:rs\.?|inr)\s*([\d,]+(?:\.\d{1,2})?)/i);
+    if (!amountMatch) return null;
+
+    const amount = parseFloat(amountMatch[1].replace(/,/g, ''));
+
+    // Detect credit/debit keywords
+    const lowerBody = msg.body.toLowerCase();
+    const type = lowerBody.includes('credit') || lowerBody.includes('received') ? 'income'
+      : lowerBody.includes('debit') || lowerBody.includes('paid') || lowerBody.includes('spent') ? 'expense'
+        : null;
+    if (!type) return null;
+
+    // Try extracting date in format "on dd-mm-yyyy"
+    const dateRegex = /on\s+(\d{2})-(\d{2})-(\d{4})/i;
+    const dateMatch = msg.body.match(dateRegex);
+
+    let transactionDate: string;
+
+    if (dateMatch) {
+      // If matched, convert to ISO format yyyy-mm-dd
+      const [_, day, month, year] = dateMatch;
+      transactionDate = `${year}-${month}-${day}`;
+    } else {
+      // Fallback to SMS timestamp
+      const smsDate = new Date(Number(msg.date));
+      if (isNaN(smsDate.getTime())) return null;
+      transactionDate = smsDate.toISOString().split('T')[0];
+    }
+
+    return {
+      id: msg._id,
+      amount,
+      date: transactionDate,
+      type,
+      body: msg.body
+    };
+  };
+
 
   const generateChartData = (data: Transaction[]) => {
     if (!data || data.length === 0) return;
@@ -797,6 +1074,79 @@ export default function App() {
     });
   };
 
+  const handleTransactionProcessed = () => {
+    console.group('💾 Processing Transaction');
+
+    if (!currentSMSTransaction) {
+      return;
+    }
+
+    console.log(`🆔 Processing Transaction ID: ${currentSMSTransaction.id}`);
+
+    // Update processed SMS
+    const processed = JSON.parse(storage.getString('processedSMS') || '[]');
+    const newProcessed = [...processed, currentSMSTransaction.id];
+    storage.set('processedSMS', JSON.stringify(newProcessed));
+    console.log(`📝 Marked transaction ${currentSMSTransaction.id} as processed`);
+
+    // Update uncategorized transactions
+    const remaining = uncategorizedTransactions.filter(
+      t => t.id !== currentSMSTransaction.id
+    );
+    setUncategorizedTransactions(remaining);
+    storage.set('uncategorizedTransactions', JSON.stringify(remaining));
+    console.log(`🗑️ Removed transaction from uncategorized list`);
+
+    // Handle next transaction
+    if (remaining.length > 0) {
+      console.log(`➡️ Next transaction ID: ${remaining[0].id}`);
+      setCurrentSMSTransaction(remaining[0]);
+    } else {
+      console.log('⏹️ No more transactions to process');
+      setShowPopup(false);
+    }
+
+    console.groupEnd();
+  };
+
+  interface SMSGreetingProps {
+    onClose: () => void;
+    transaction: TransactionFromSMS | null;
+    count: number;
+  }
+
+  const SMSGreeting: React.FC<SMSGreetingProps> = ({ onClose, transaction, count }) => {
+    if (!transaction) return null; // Add null check
+    console.log("Rendering SMS Greeting with count:", count);
+    return (
+      <View style={styles.smsAlert}>
+        <Text style={styles.smsAlertText}>
+          🎉 We found {count} new transaction{count !== 1 ? 's' : ''} in your SMS!
+        </Text>
+        <TouchableOpacity
+          style={styles.smsAlertButton}
+          onPress={() => {
+            // Pre-fill form with SMS data before showing popup
+            if (currentSMSTransaction) {
+              setAmount(currentSMSTransaction.amount.toString());
+              setTransactionType(currentSMSTransaction.type);
+              setDescription(currentSMSTransaction.body.substring(0, 40));
+              try {
+                setDate(new Date(currentSMSTransaction.date));
+              } catch (e) {
+                setDate(new Date());
+              }
+            }
+            setShowPopup(true);
+            onClose();
+          }}
+        >
+          <Text style={styles.smsAlertButtonText}>Add Now</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  };
+
   const renderPercentageIndicator = (
     label: string,
     data: number[],
@@ -866,7 +1216,9 @@ export default function App() {
   };
 
   return (
+
     <View style={styles.container}>
+
       <StatusBar barStyle="light-content" backgroundColor="#212121" />
 
       {/* Header */}
@@ -907,6 +1259,7 @@ export default function App() {
                   </TouchableOpacity>
                 </View>
 
+
                 {recentTransactions.length > 0 && (
                   <>
                     <View style={styles.tileRow}>
@@ -937,6 +1290,7 @@ export default function App() {
                         </View>
                       ))}
                     </View>
+
 
                     <View style={styles.tileRow}>
                       {recentTransactions.slice(3, 6).map((transaction, index) => (
@@ -1037,6 +1391,8 @@ export default function App() {
                   </View>
                 </View>
               </View>
+
+
 
 
 
@@ -1445,7 +1801,7 @@ export default function App() {
               placeholder="Amount"
               placeholderTextColor="#a8aeaa"
               keyboardType="numeric"
-              value={amount}
+              value={currentSMSTransaction?.amount.toString() || amount}
               onChangeText={setAmount}
             />
 
@@ -1495,11 +1851,12 @@ export default function App() {
               onPress={() => setShowDatePicker(true)}
             >
               <Text style={styles.dateText}>
-                {date.toLocaleDateString("en-US", {
-                  year: 'numeric',
-                  month: 'short',
-                  day: 'numeric'
-                })}
+                {currentSMSTransaction?.date ||
+                  date.toLocaleDateString("en-US", {
+                    year: 'numeric',
+                    month: 'short',
+                    day: 'numeric'
+                  })}
               </Text>
             </TouchableOpacity>
             {showDatePicker && (
@@ -1518,6 +1875,16 @@ export default function App() {
             <TouchableOpacity
               style={styles.confirmButton}
               onPress={() => {
+                if (prefillData) {
+                  // Use prefillData values as defaults
+                  const newTransaction = {
+                    amount: prefillData.amount,
+                    type: prefillData.type,
+                    date: prefillData.date,
+                    // ... other fields with user inputs
+                  };
+                  // Submit logic here
+                }
                 console.log('Button pressed with values:', {
                   amount: amount,
                   category: category,
@@ -1557,7 +1924,7 @@ export default function App() {
                 };
 
                 console.log('Creating transaction with category:', newTransaction.category);
-
+                handleTransactionProcessed();
                 // Rest of your transaction processing code
                 const currentTransactions = [...transactions];
                 const updatedTransactions = [...currentTransactions, newTransaction]
@@ -1608,7 +1975,8 @@ export default function App() {
                 setCategory("");
                 setNewCategory("");
                 setDescription("");
-                setDate(new Date());
+                setDate(new Date())
+                setPrefillData(null); // Clear prefill after submit
               }}
             >
               <Text style={styles.buttonText}>Confirm</Text>
@@ -1701,6 +2069,41 @@ export default function App() {
 const screenWidth = Dimensions.get('window').width;
 
 const styles = StyleSheet.create({
+  smsAlert: {
+    position: 'absolute',
+    top: 20,
+    left: 20,
+    right: 20,
+    backgroundColor: '#07a69b',
+    padding: 15,
+    borderRadius: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    zIndex: 100,
+  },
+  smsAlertText: {
+    color: 'white',
+    fontSize: 16,
+    flex: 1,
+  },
+  smsAlertButton: {
+    backgroundColor: 'white',
+    paddingVertical: 8,
+    paddingHorizontal: 15,
+    borderRadius: 5,
+    marginLeft: 10,
+  },
+  smsAlertButtonText: {
+    color: '#07a69b',
+    fontWeight: 'bold',
+  },
+  smsNotice: {
+    color: '#07a69b',
+    marginBottom: 15,
+    fontStyle: 'italic',
+    fontSize: 14,
+  },
   categoryScrollView: {
     maxHeight: Dimensions.get('window').height * 0.4,
     marginTop: 20,
@@ -1729,6 +2132,19 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '500',
     marginBottom: 5,
+  },
+  debugButton: {
+    position: 'absolute',
+    bottom: 100,
+    right: 20,
+    backgroundColor: 'red',
+    padding: 15,
+    borderRadius: 10,
+    zIndex: 999
+  },
+  debugText: {
+    color: 'white',
+    fontWeight: 'bold'
   },
   categoryDetails: {
     flexDirection: 'row',
