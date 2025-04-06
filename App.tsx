@@ -372,6 +372,7 @@ export default function App() {
   const [greatestIncome, setGreatestIncome] = useState<{ category: string, amount: number }>({ category: "", amount: 0 });
   const [greatestExpense, setGreatestExpense] = useState<{ category: string, amount: number }>({ category: "", amount: 0 });
   const [showPopup, setShowPopup] = useState(false);
+  const [isDeleteMode, setIsDeleteMode] = useState(false);
   const [prefillData, setPrefillData] = useState<TransactionFromSMS | null>(null);
   const formatTableDate = (dateString: string) => {
     const date = new Date(dateString);
@@ -588,8 +589,15 @@ export default function App() {
             if (newTransactions.length > 0) {
               newTransactions.forEach((transaction, index) => {
                 Alert.alert(
-                  'Transaction Found!',
-                  `Add ${formatCurrency(transaction.amount)} ${transaction.type}?`,
+                  'Transaction detected',
+                  `Amount: ${formatCurrency(transaction.amount)}\n\nDate: ${new Date(transaction.date).toLocaleDateString("en-US", {
+                    year: "numeric",
+                    month: "short",
+                    day: "numeric"
+                  })}\n\nType: ${transaction.type.toUpperCase()}
+
+Message Preview:
+"${transaction.body.slice(0, 100)}..."`, // Limit long SMS messages
                   [
                     {
                       text: 'Ignore',
@@ -602,14 +610,17 @@ export default function App() {
                         setPrefillData(transaction);
                         setShowPopup(true);
                         markAsProcessed(transaction.id);
+
+                        // Final transaction triggers new checkpoint
                         if (index === newTransactions.length - 1) {
-                          // Final transaction processed
                           storage.set('lastCheckpoint', Date.now());
                         }
                       },
                     },
-                  ]
+                  ],
+                  { cancelable: false } // Prevent user from dismissing without decision
                 );
+
               });
             } else {
               storage.set('lastCheckpoint', Date.now());
@@ -1227,7 +1238,7 @@ export default function App() {
           onPress={clearAllData}>
           <Image
             source={require("./src/assets/images/logo.png")}
-            style={[styles.logoImage, { tintColor: "#07a69b" }]}
+            style={[styles.logoImage, { tintColor: "transparent" }]}
             resizeMode="contain"
           />
         </TouchableOpacity>
@@ -1417,39 +1428,68 @@ export default function App() {
                 </View>
               </View>
               <View>
-                <View style={styles.tileRow}>
-                  {/* Plus Button */}
-                  <TouchableOpacity
-                    style={[styles.transactionTile, {
-                      borderColor: "#07a69b",
-                      width: "48%",
-                    }]}
-                    onPress={() => setShowPopup(true)}
-                  >
-                    <Image
-                      source={require("./src/assets/images/plus.png")}
-                      style={styles.actionIcon}
-                      resizeMode="contain"
-                    />
-                  </TouchableOpacity>
+                <View>
+                  <View style={styles.tileRow}>
+                    {/* Plus Button */}
+                    <TouchableOpacity
+                      style={[styles.transactionTile, {
+                        borderColor: "#07a69b",
+                        width: "30%",
+                      }]}
+                      onPress={() => setShowPopup(true)}
+                    >
+                      <Image
+                        source={require("./src/assets/images/plus.png")}
+                        style={[styles.actionIcon, { transform: [{ scale: 1.3 }] }]} // scale up 1.5x
+                        resizeMode="contain"
+                      />
 
-                  {/* Search Toggle Button */}
-                  <TouchableOpacity
-                    style={[styles.transactionTile, {
-                      borderColor: "#07a69b",
-                      width: "48%",
-                    }]}
-                    onPress={() => {
-                      setShowSearchBar(!showSearchBar);
-                      setSearchQuery('');
-                    }}
-                  >
-                    <Image
-                      source={require("./src/assets/images/search.png")}
-                      style={styles.actionIcon}
-                      resizeMode="contain"
-                    />
-                  </TouchableOpacity>
+                    </TouchableOpacity>
+
+                    {/* Delete Mode Toggle */}
+                    <TouchableOpacity
+                      style={[styles.transactionTile, {
+                        borderColor: isDeleteMode ? "#E53935" : "#07a69b",
+                        width: "30%",
+                      }]}
+                      onPress={() => {
+                        setIsDeleteMode(!isDeleteMode);
+                        setShowSearchBar(false);
+                      }}
+                    >
+                      <Image
+                        source={require("./src/assets/images/delete.png")}
+                        style={[styles.actionIcon, { tintColor: isDeleteMode ? "#E53935" : "#07a69b" }]}
+                        resizeMode="contain"
+                      />
+                    </TouchableOpacity>
+
+                    {/* Search Toggle Button */}
+                    <TouchableOpacity
+                      style={[styles.transactionTile, {
+                        borderColor: "#07a69b",
+                        width: "30%",
+                      }]}
+                      onPress={() => {
+                        setShowSearchBar(!showSearchBar);
+                        setSearchQuery('');
+                        setIsDeleteMode(false);
+                      }}
+                    >
+                      <Image
+                        source={require("./src/assets/images/search.png")}
+                        style={styles.actionIcon}
+                        resizeMode="contain"
+                      />
+                    </TouchableOpacity>
+                  </View>
+
+                  {/* Delete Mode Indicator */}
+                  {isDeleteMode && (
+                    <View>
+
+                    </View>
+                  )}
                 </View>
 
                 {/* Search Bar - Now properly below buttons */}
@@ -1483,32 +1523,65 @@ export default function App() {
                   </View>
 
                   {filteredTransactions.map((transaction, index) => (
-                    <View key={index} style={styles.tableRow}>
-                      <Text
-                        style={[styles.tableCell, { width: '35%' }, { paddingRight: 25 }, { color: transaction.type === 'income' ? '#4CAF50' : '#E53935' }]}
-                        numberOfLines={1}
-                        ellipsizeMode="tail"
-                      >
-                        {transaction.description || 'No description'}
-                      </Text>
-                      <Text style={[styles.tableCell, { width: '20%' }]}>
-                        {formatTableDate(transaction.date)}
-                      </Text>
-                      <Text
-                        style={[styles.tableCell, { width: '25%' }]}
-                        numberOfLines={1}
-                        ellipsizeMode="tail"
-                      >
-                        {transaction.category}
-                      </Text>
-                      <Text style={[
-                        styles.tableCell,
-                        { width: '20%' },
-                        transaction.type === 'income' ? styles.incomeText : styles.expenseText
+                    <TouchableOpacity
+                      key={index}
+                      onPress={() => {
+                        if (isDeleteMode) {
+                          Alert.alert(
+                            "Delete Transaction",
+                            `Are you sure you want to delete this transaction?\n\n
+                  Date: ${formatTableDate(transaction.date)}\n
+                  Category: ${transaction.category}\n
+                  Amount: ${formatCurrency(transaction.amount)}\n
+                  Description: ${transaction.description}`,
+                            [
+                              { text: "Cancel", style: "cancel" },
+                              {
+                                text: "Delete",
+                                style: "destructive",
+                                onPress: () => {
+                                  const newTransactions = transactions.filter(
+                                    t => t !== transaction
+                                  );
+                                  setTransactions(newTransactions);
+                                  setIsDeleteMode(false);
+                                }
+                              }
+                            ]
+                          );
+                        }
+                      }}
+                    >
+                      <View style={[
+                        styles.tableRow,
+                        isDeleteMode && styles.deleteModeRow
                       ]}>
-                        {formatCurrency(transaction.amount)}
-                      </Text>
-                    </View>
+                        <Text
+                          style={[styles.tableCell, { width: '35%' }, { paddingRight: 25 }, { color: transaction.type === 'income' ? '#4CAF50' : '#E53935' }]}
+                          numberOfLines={1}
+                          ellipsizeMode="tail"
+                        >
+                          {transaction.description || 'No description'}
+                        </Text>
+                        <Text style={[styles.tableCell, { width: '20%' }]}>
+                          {formatTableDate(transaction.date)}
+                        </Text>
+                        <Text
+                          style={[styles.tableCell, { width: '25%' }]}
+                          numberOfLines={1}
+                          ellipsizeMode="tail"
+                        >
+                          {transaction.category}
+                        </Text>
+                        <Text style={[
+                          styles.tableCell,
+                          { width: '20%' },
+                          transaction.type === 'income' ? styles.incomeText : styles.expenseText
+                        ]}>
+                          {formatCurrency(transaction.amount)}
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
                   ))}
                 </ScrollView>
               </View>
@@ -2152,6 +2225,34 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 5,
   },
+  deleteModeRow: {
+    borderRightWidth: 4,
+    borderRightColor: '#E53935',
+    borderRadius: 20,
+  },
+  deleteModeIndicator: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#E53935',
+    padding: 10,
+    borderRadius: 8,
+    marginVertical: 10,
+  },
+  deleteModeText: {
+    color: 'white',
+    fontWeight: 'bold',
+  },
+  cancelDeleteButton: {
+    backgroundColor: 'white',
+    borderRadius: 5,
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+  },
+  cancelDeleteText: {
+    color: '#E53935',
+    fontWeight: 'bold',
+  },
   categoryAmount: {
     color: '#fff',
     fontSize: 18,
@@ -2450,7 +2551,6 @@ const styles = StyleSheet.create({
   tableCell: {
     color: 'white',
     fontSize: 14,
-    paddingRight: 5,
   },
   scrollContainer: {
     maxHeight: 300, // Adjust based on your needs
