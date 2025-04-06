@@ -16,7 +16,6 @@ import {
 import { LineChart, PieChart } from "react-native-chart-kit";
 import { MMKV } from 'react-native-mmkv';
 import { Alert } from 'react-native';
-import '@tensorflow/tfjs-react-native';
 import { Dimensions } from "react-native";
 import { Picker } from "@react-native-picker/picker"; // Added Picker import
 import DateTimePicker from "@react-native-community/datetimepicker"; // Added DateTimePicker import
@@ -33,6 +32,31 @@ interface SmsMessage {
   body: string;
   date: string;
   address: string;
+}
+interface BaseCategoryItem {
+  name: string;
+  amount: number;
+  percentage: number;
+  color: string;
+  isMain: boolean;
+}
+
+interface OtherCategoryItem extends BaseCategoryItem {
+  subCategories: SubCategoryItem[];
+}
+
+type CategoryItem = BaseCategoryItem | OtherCategoryItem;
+
+// 2. Type guard for Other category
+const isOtherCategory = (item: CategoryItem): item is OtherCategoryItem => {
+  return item.name === 'Other' && 'subCategories' in item;
+};
+
+
+interface SubCategoryItem {
+  name: string;
+  amount: number;
+  percentage: number;
 }
 
 interface TransactionFromSMS {
@@ -83,96 +107,8 @@ class SimpleLinearRegression {
 }
 
 
-const useCalculateProjection = (transactions: Transaction[]) => {
-  const calculateProjection = () => {
-    if (transactions.length < 2) return {
-      currentNet: 0,
-      projectedNet: 0,
-      dailyChange: 0
-    };
-
-    // Prepare data for regression
-    const validTransactions = transactions
-      .filter(t => t.date && !isNaN(new Date(t.date).getTime()))
-      .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-
-    // Convert dates to numerical values (days since first transaction)
-    const firstDate = new Date(validTransactions[0].date).getTime();
-    const X = validTransactions.map(t =>
-      (new Date(t.date).getTime() - firstDate) / (1000 * 3600 * 24)
-    );
-    const y = validTransactions.map(t => t.runningBalance);
-
-    // Train regression model
-    const regression = new SimpleLinearRegression();
-    regression.train(X, y);
-
-    // Calculate current net (last known balance)
-    const currentNet = y[y.length - 1];
-
-    // Predict 30 days from last transaction
-    const lastX = X[X.length - 1];
-    const projectedDate = lastX + 30;
-    const projectedNet = regression.predict(projectedDate);
-
-    // Calculate daily change from slope
-    const dailyChange = regression.slope;
-
-    return {
-      currentNet,
-      projectedNet,
-      dailyChange
-    };
-  };
-
-  return calculateProjection();
-};
-
 // Modified ProjectedNetWorth component
-const ProjectedNetWorth: React.FC<{ transactions: Transaction[] }> = ({ transactions }) => {
-  const { currentNet, projectedNet, dailyChange } = useCalculateProjection(transactions);
 
-  if (!transactions.length) return (
-    <Text style={styles.infoText}>Add at least 5 transactions to see forecasts</Text>
-  );
-
-  if (transactions.length <= 4) return (
-    <Text style={styles.infoText}>Add one more transaction to enable predictions</Text>
-  );
-
-  return (
-    <View>
-      <View>
-        <Text style={[styles.totalsLabel, { fontSize: 15, marginBottom: 4 }]}>
-          30 DAY PROJECTION:
-        </Text>
-
-        <View style={styles.projectionValueContainer}>
-          <Text style={[
-            styles.projectionValue,
-            { fontSize: 36, fontWeight: "bold", color: 'white' }
-          ]}>
-            {projectedNet >= 100000
-              ? `₹${(projectedNet / 100000).toFixed(2)}L`
-              : projectedNet >= 1000
-                ? `₹${(projectedNet / 1000).toFixed(2)}K`
-                : `₹${projectedNet}`
-            }
-            <Text style={{ color: dailyChange >= 0 ? '#22c55e' : '#ef4444' }}>
-              {dailyChange >= 0 ? ' ▲' : ' ▼'}
-            </Text>
-          </Text>
-        </View>
-      </View>
-
-
-      <Text style={[styles.trendText, { fontSize: 15, marginLeft: 200, marginTop: -39 }]}>
-        {dailyChange >= 0 ? 'Increasing' : 'Decreasing'} by
-        ₹{Number(Math.abs(dailyChange).toFixed(2)).toLocaleString('en-IN')}/day
-      </Text>
-    </View>
-  );
-};
 
 // ⏱ Ensure checkpoint only initialized once
 const ensureCheckpoint = () => {
@@ -221,6 +157,8 @@ export default function App() {
   const [transactions, setTransactions] = useState<Transaction[]>(loadTransactions);
   const [uncategorizedTransactions, setUncategorizedTransactions] = useState<TransactionFromSMS[]>([]);
   const [currentSMSTransaction, setCurrentSMSTransaction] = useState<TransactionFromSMS | null>(null);
+  const [showCategoryModal, setShowCategoryModal] = useState(false);
+  const [selectedChartType, setSelectedChartType] = useState<'income' | 'expense'>('income');
   const [showSMSGreeting, setShowSMSGreeting] = useState(() => {
     const stored = storage.getString('uncategorizedTransactions');
     return !!stored && JSON.parse(stored).length > 0;
@@ -374,12 +312,23 @@ export default function App() {
   const [showPopup, setShowPopup] = useState(false);
   const [isDeleteMode, setIsDeleteMode] = useState(false);
   const [prefillData, setPrefillData] = useState<TransactionFromSMS | null>(null);
+  const localDate = new Date(date);
+  const formattedDate = `${localDate.getFullYear()}-${(localDate.getMonth() + 1)
+    .toString().padStart(2, '0')}-${localDate.getDate().toString().padStart(2, '0')}`;
   const formatTableDate = (dateString: string) => {
-    const date = new Date(dateString);
+    const date = parseLocalDate(dateString);
     return date.toLocaleDateString("en-US", {
       month: "short",
       day: "numeric"
     });
+  };
+  const getCurrentLocalDate = () => {
+    const now = new Date();
+    return new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate()
+    );
   };
 
   useEffect(() => {
@@ -400,33 +349,47 @@ export default function App() {
     storage.set('processedSMS', JSON.stringify([...processed, id]));
   };
 
+  // Helper functions for local date handling
+  const parseLocalDate = (dateString: string): Date => {
+    const [year, month, day] = dateString.split('-').map(Number);
+    return new Date(year, month - 1, day);
+  };
+
+  const formatLocalDateString = (date: Date): string => {
+    return [
+      date.getFullYear(),
+      String(date.getMonth() + 1).padStart(2, '0'),
+      String(date.getDate()).padStart(2, '0')
+    ].join('-');
+  };
+
   const processFinancialData = (data: Transaction[]) => {
     const currentDate = new Date();
+    currentDate.setHours(0, 0, 0, 0); // Set to local midnight
 
-
-    // Find the most recent balance up to current date
+    // Find the most recent balance up to current LOCAL date
     const allTransactions = [...data].sort((a, b) =>
-      new Date(b.date).getTime() - new Date(a.date).getTime()
+      parseLocalDate(b.date).getTime() - parseLocalDate(a.date).getTime()
     );
 
     const currentBalance = allTransactions.find(t =>
-      new Date(t.date) <= currentDate
+      parseLocalDate(t.date) <= currentDate
     )?.runningBalance || 0;
 
     setNetWorth(currentBalance);
 
-    // Get recent transactions (last 5 up to current date)
+    // Get recent transactions (last 5 up to current LOCAL date)
     const recent = data
       .filter(item =>
         item.type !== "balance" &&
-        new Date(item.date) <= currentDate
+        parseLocalDate(item.date) <= currentDate
       )
       .slice(-6)
       .reverse();
 
     setRecentTransactions(recent);
 
-    // Rest of existing processing logic...
+    // Monthly calculations using LOCAL dates
     const startOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
     let monthlyIncome = 0;
     let monthlyExpense = 0;
@@ -436,7 +399,7 @@ export default function App() {
     let maxExpenseCategory = "";
 
     data.forEach(transaction => {
-      const transactionDate = new Date(transaction.date);
+      const transactionDate = parseLocalDate(transaction.date);
       if (transactionDate >= startOfMonth && transactionDate <= currentDate) {
         if (transaction.type === "income") {
           monthlyIncome += transaction.amount;
@@ -464,13 +427,93 @@ export default function App() {
   };
 
   const formatTransactionDate = (dateString: string) => {
-    const date = new Date(dateString);
+    const date = parseLocalDate(dateString);
     return date.toLocaleDateString("en-US", {
       month: "short",
       day: "numeric"
-    })
-      .toUpperCase()
-      .replace(" ", " ");
+    }).toUpperCase();
+  };
+
+  const useCalculateProjection = (transactions: Transaction[]) => {
+    const calculateProjection = () => {
+      if (transactions.length < 2) return {
+        currentNet: 0,
+        projectedNet: 0,
+        dailyChange: 0
+      };
+
+      // Use LOCAL dates for regression
+      const validTransactions = transactions
+        .filter(t => t.date && !isNaN(parseLocalDate(t.date).getTime()))
+        .sort((a, b) => parseLocalDate(a.date).getTime() - parseLocalDate(b.date).getTime());
+
+      const firstDate = parseLocalDate(validTransactions[0].date).getTime();
+      const X = validTransactions.map(t =>
+        (parseLocalDate(t.date).getTime() - firstDate) / (1000 * 3600 * 24)
+      );
+      const y = validTransactions.map(t => t.runningBalance);
+
+      const regression = new SimpleLinearRegression();
+      regression.train(X, y);
+
+      const currentNet = y[y.length - 1];
+      const lastX = X[X.length - 1];
+      const projectedDate = lastX + 30;
+      const projectedNet = regression.predict(projectedDate);
+
+      return {
+        currentNet,
+        projectedNet,
+        dailyChange: regression.slope
+      };
+    };
+
+    return calculateProjection();
+  };
+
+  const ProjectedNetWorth: React.FC<{ transactions: Transaction[] }> = ({ transactions }) => {
+    const { currentNet, projectedNet, dailyChange } = useCalculateProjection(transactions);
+
+    if (!transactions.length) return (
+      <Text style={styles.infoText}>Add at least 5 transactions to see forecasts</Text>
+    );
+
+    if (transactions.length <= 4) return (
+      <Text style={styles.infoText}>Add one more transaction to enable predictions</Text>
+    );
+
+    return (
+      <View>
+        <View>
+          <Text style={[styles.totalsLabel, { fontSize: 15, marginBottom: 4 }]}>
+            30 DAY PROJECTION:
+          </Text>
+
+          <View style={styles.projectionValueContainer}>
+            <Text style={[
+              styles.projectionValue,
+              { fontSize: 36, fontWeight: "bold", color: 'white' }
+            ]}>
+              {projectedNet >= 100000
+                ? `₹${(projectedNet / 100000).toFixed(2)}L`
+                : projectedNet >= 1000
+                  ? `₹${(projectedNet / 1000).toFixed(2)}K`
+                  : `₹${projectedNet}`
+              }
+              <Text style={{ color: dailyChange >= 0 ? '#22c55e' : '#ef4444' }}>
+                {dailyChange >= 0 ? ' ▲' : ' ▼'}
+              </Text>
+            </Text>
+          </View>
+        </View>
+
+
+        <Text style={[styles.trendText, { fontSize: 15, marginLeft: 200, marginTop: -39 }]}>
+          {dailyChange >= 0 ? 'Increasing' : 'Decreasing'} by
+          ₹{Number(Math.abs(dailyChange).toFixed(2)).toLocaleString('en-IN')}/day
+        </Text>
+      </View>
+    );
   };
 
   const requestSMSPermission = async () => {
@@ -640,40 +683,46 @@ Message Preview:
   const parseSMSMessage = (msg: SmsMessage): TransactionFromSMS | null => {
     if (!msg.body) return null;
 
-    // Match first number that looks like amount (after Rs or INR)
+    // Amount parsing remains the same
     const amountMatch = msg.body.match(/(?:rs\.?|inr)\s*([\d,]+(?:\.\d{1,2})?)/i);
     if (!amountMatch) return null;
-
     const amount = parseFloat(amountMatch[1].replace(/,/g, ''));
 
-    // Detect credit/debit keywords
+    // Type detection remains the same
     const lowerBody = msg.body.toLowerCase();
     const type = lowerBody.includes('credit') || lowerBody.includes('received') ? 'income'
       : lowerBody.includes('debit') || lowerBody.includes('paid') || lowerBody.includes('spent') ? 'expense'
         : null;
     if (!type) return null;
 
-    // Try extracting date in format "on dd-mm-yyyy"
+    // Date handling with proper scoping
+    let transactionDate: string;
     const dateRegex = /on\s+(\d{2})-(\d{2})-(\d{4})/i;
     const dateMatch = msg.body.match(dateRegex);
 
-    let transactionDate: string;
-
     if (dateMatch) {
-      // If matched, convert to ISO format yyyy-mm-dd
+      // Handle explicit date from message
       const [_, day, month, year] = dateMatch;
-      transactionDate = `${year}-${month}-${day}`;
+      transactionDate = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
     } else {
-      // Fallback to SMS timestamp
+      // Handle SMS timestamp with local date
       const smsDate = new Date(Number(msg.date));
       if (isNaN(smsDate.getTime())) return null;
-      transactionDate = smsDate.toISOString().split('T')[0];
+
+      // Create local date without time components
+      const localSmsDate = new Date(
+        smsDate.getFullYear(),
+        smsDate.getMonth(),
+        smsDate.getDate()
+      );
+
+      transactionDate = formatLocalDateString(localSmsDate);
     }
 
     return {
       id: msg._id,
       amount,
-      date: transactionDate,
+      date: transactionDate, // Use the properly formatted date
       type,
       body: msg.body
     };
@@ -684,7 +733,10 @@ Message Preview:
     if (!data || data.length === 0) return;
 
     // 1) Filter out "balance" entries
-    const transactionData = data.filter(item => item.type !== "balance");
+    const transactionData = data.filter(item =>
+      item.type !== "balance" &&
+      parseLocalDate(item.date) <= new Date()
+    );
 
     // 2) Helper: get the "middle" day of a given month
     const getMiddleDate = (date: Date) => {
@@ -833,110 +885,121 @@ Message Preview:
   ];
 
   const calculateIncomeCategories = () => {
-    const today = getCurrentDate();
+    const today = getCurrentLocalDate();
+    const sixMonthsAgo = new Date(today.getFullYear(), today.getMonth() - 6, today.getDate()); // 🆕 6-month filter
     const categories: { [key: string]: number } = {};
-
     let totalIncome = 0;
 
     transactions.forEach(transaction => {
-      const transactionDate = new Date(transaction.date);
-      if (transactionDate <= today && transaction.type === 'income') {
+      const transactionDate = parseLocalDate(transaction.date);
+      if (
+        transactionDate >= sixMonthsAgo && // 🆕 Only last 6 months
+        transactionDate <= today &&
+        transaction.type === 'income'
+      ) {
         categories[transaction.category] = (categories[transaction.category] || 0) + transaction.amount;
         totalIncome += transaction.amount;
       }
     });
 
-    // Sort categories by amount in descending order
     const sortedCategories = Object.entries(categories)
-      .sort(([, amountA], [, amountB]) => amountB - amountA);
+      .sort(([, a], [, b]) => b - a);
 
-    // If more than 3 categories, combine the smallest into "Other"
     if (sortedCategories.length > 3) {
-      const topCategories = sortedCategories.slice(0, 3);
-      const otherCategories = sortedCategories.slice(3);
+      const minTopValue = sortedCategories[2][1];
+      const topCategories = sortedCategories.filter(([, amount]) => amount >= minTopValue);
+      const otherCategories = sortedCategories.filter(([, amount]) => amount < minTopValue);
       const otherTotal = otherCategories.reduce((sum, [, amount]) => sum + amount, 0);
 
       return [
-        ...topCategories.map(([category, amount], index) => ({
-          name: category,
+        ...topCategories.map(([name, amount], index) => ({
+          name,
           amount: Math.abs(amount),
           percentage: (amount / totalIncome) * 100,
-          color: categoryColors[index % 4], // Green shades for income
-          legendFontColor: '#fff',
-          legendFontSize: 12
+          color: categoryColors[index % 4],
+          isMain: true
         })),
         {
-          name: 'other',
+          name: 'Other',
           amount: otherTotal,
           percentage: (otherTotal / totalIncome) * 100,
-          color: categoryColors[3], // Use a different color for "Other"
-          legendFontColor: '#fff',
-          legendFontSize: 12
+          color: categoryColors[3],
+          subCategories: otherCategories.map(([name, amount]) => ({
+            name,
+            amount: Math.abs(amount),
+            percentage: (amount / totalIncome) * 100
+          })),
+          isMain: false
         }
       ];
-    }
+    };
 
-    return sortedCategories.map(([category, amount], index) => ({
-      name: category,
+    return sortedCategories.map(([name, amount], index) => ({
+      name,
       amount: Math.abs(amount),
       percentage: (amount / totalIncome) * 100,
-      color: categoryColors[index % 4], // Green shades for income
-      legendFontColor: '#fff',
-      legendFontSize: 12
+      color: categoryColors[index % 4],
+      isMain: true
     }));
   };
 
   const calculateExpenseCategories = () => {
-    const today = getCurrentDate();
+    const today = getCurrentLocalDate();
+    const sixMonthsAgo = new Date(today.getFullYear(), today.getMonth() - 6, today.getDate()); // 🆕 6-month filter
     const categories: { [key: string]: number } = {};
-
     let totalExpense = 0;
 
     transactions.forEach(transaction => {
-      const transactionDate = new Date(transaction.date);
-      if (transactionDate <= today && transaction.type === 'expense') {
-        categories[transaction.category] = (categories[transaction.category] || 0) + Math.abs(transaction.amount);
-        totalExpense += Math.abs(transaction.amount);
+      const transactionDate = parseLocalDate(transaction.date);
+      if (
+        transactionDate >= sixMonthsAgo && // 🆕 Only last 6 months
+        transactionDate <= today &&
+        transaction.type === 'expense'
+      ) {
+        const absoluteAmount = Math.abs(transaction.amount);
+        categories[transaction.category] = (categories[transaction.category] || 0) + absoluteAmount;
+        totalExpense += absoluteAmount;
       }
     });
 
-    // Sort categories by amount in descending order
     const sortedCategories = Object.entries(categories)
-      .sort(([, amountA], [, amountB]) => amountB - amountA);
+      .sort(([, a], [, b]) => b - a);
 
-    // If more than 3 categories, combine the smallest into "Other"
     if (sortedCategories.length > 3) {
-      const topCategories = sortedCategories.slice(0, 3);
-      const otherCategories = sortedCategories.slice(3);
+      const minTopValue = sortedCategories[2][1];
+      const topCategories = sortedCategories.filter(([, amount]) => amount >= minTopValue);
+      const otherCategories = sortedCategories.filter(([, amount]) => amount < minTopValue);
       const otherTotal = otherCategories.reduce((sum, [, amount]) => sum + amount, 0);
 
       return [
-        ...topCategories.map(([category, amount], index) => ({
-          name: category,
-          amount,
+        ...topCategories.map(([name, amount], index) => ({
+          name,
+          amount: Math.abs(amount),
           percentage: (amount / totalExpense) * 100,
-          color: categoryColors[(index % 4) + 4], // Red shades for expenses
-          legendFontColor: '#fff',
-          legendFontSize: 12
+          color: categoryColors[(index % 4) + 4],
+          isMain: true
         })),
         {
-          name: 'other',
+          name: 'Other',
           amount: otherTotal,
           percentage: (otherTotal / totalExpense) * 100,
-          color: categoryColors[7], // Use a different color for "Other"
-          legendFontColor: '#fff',
-          legendFontSize: 12
+          color: categoryColors[7],
+          subCategories: otherCategories.map(([name, amount]) => ({
+            name,
+            amount: Math.abs(amount),
+            percentage: (amount / totalExpense) * 100
+          })),
+          isMain: false
         }
       ];
-    }
+    };
 
-    return sortedCategories.map(([category, amount], index) => ({
-      name: category,
+    return sortedCategories.map(([name, amount], index) => ({
+      name,
       amount,
       percentage: (amount / totalExpense) * 100,
-      color: categoryColors[(index % 4) + 4], // Red shades for expenses
-      legendFontColor: '#fff',
-      legendFontSize: 12
+      color: categoryColors[(index % 4) + 4],
+      isMain: true
     }));
   };
 
@@ -1648,88 +1711,100 @@ Message Preview:
                   '#4CAF50'
                 )}
               </View>
-              <Text style={[styles.totalsLabel, { paddingTop: 15 }]}>INCOME BY CATEGORY</Text>
+              <Text style={[styles.totalsLabel, { paddingTop: 15 }]}>6-MONTH INCOME</Text>
               <View style={styles.pieChartsContainer}>
-                {/* Income Categories Pie Chart */}
-                <View style={styles.pieChartWrapper}>
 
-                  <View style={styles.pieChartRow}>
-                    {/* Pie Chart Container - Adjusted to properly center and contain the chart */}
-                    <View style={{
-                      ...styles.chartContainer,
-                      alignItems: 'flex-start', // Align to start instead of center
-                      paddingRight: 20, // Add some space on the right
-                    }}>
-                      <PieChart
-                        data={calculateIncomeCategories()}
-                        width={Dimensions.get('window').width * 0.45} // Further reduced width
-                        height={220}
-                        chartConfig={{
-                          color: (opacity = 1) => `rgba(255, 255, 255, ${opacity})`,
-                          labelColor: (opacity = 1) => `rgba(255, 255, 255, ${opacity})`,
-                        }}
-                        accessor="amount"
-                        backgroundColor="transparent"
-                        paddingLeft="45"
-                        absolute
-                        hasLegend={false}
-                        style={styles.pieChart}
-                        avoidFalseZero
-                      />
-                    </View>
+                <TouchableOpacity
+                  onPress={() => {
+                    setSelectedChartType('income');
+                    setShowCategoryModal(true);
+                  }}
+                >
+                  <View style={styles.pieChartWrapper}>
+                    <View style={styles.pieChartRow}>
+                      {/* Pie Chart Container - Adjusted to properly center and contain the chart */}
+                      <View style={{
+                        ...styles.chartContainer,
+                        alignItems: 'flex-start', // Align to start instead of center
+                        paddingRight: 20, // Add some space on the right
+                      }}>
+                        <PieChart
+                          data={calculateIncomeCategories()}
+                          width={Dimensions.get('window').width * 0.45} // Further reduced width
+                          height={220}
+                          chartConfig={{
+                            color: (opacity = 1) => `rgba(255, 255, 255, ${opacity})`,
+                            labelColor: (opacity = 1) => `rgba(255, 255, 255, ${opacity})`,
+                          }}
+                          accessor="amount"
+                          backgroundColor="transparent"
+                          paddingLeft="45"
+                          absolute
+                          hasLegend={false}
+                          style={styles.pieChart}
+                          avoidFalseZero
+                        />
+                      </View>
 
-                    {/* Legend on the Right */}
-                    <View style={styles.legendContainer}>
-                      {calculateIncomeCategories().map((item, index) => (
-                        <View key={index} style={styles.legendItem}>
-                          <View style={{ ...styles.legendColor, backgroundColor: item.color }} />
-                          <Text style={styles.legendText}>
-                            {item.name}: {item.percentage.toFixed(1)}%
-                          </Text>
-                        </View>
-                      ))}
+                      {/* Legend on the Right */}
+                      <View style={styles.legendContainer}>
+                        {calculateIncomeCategories().map((item, index) => (
+                          <View key={index} style={styles.legendItem}>
+                            <View style={{ ...styles.legendColor, backgroundColor: item.color }} />
+                            <Text style={styles.legendText}>
+                              {item.name}: {item.percentage.toFixed(1)}%
+                            </Text>
+                          </View>
+                        ))}
+                      </View>
                     </View>
                   </View>
-                </View>
-                <Text style={styles.netWorthTitle}>EXPENSES BY CATEGORY</Text>
-                {/* Expense Categories Pie Chart - Same changes applied */}
-                <View style={styles.pieChartWrapper}>
-                  <View style={styles.pieChartRow}>
-                    <View style={{
-                      ...styles.chartContainer,
-                      alignItems: 'flex-start',
-                      paddingRight: 20,
-                    }}>
-                      <PieChart
-                        data={calculateExpenseCategories()}
-                        width={Dimensions.get('window').width * 0.45}
-                        height={220}
-                        chartConfig={{
-                          color: (opacity = 1) => `rgba(255, 255, 255, ${opacity})`,
-                          labelColor: (opacity = 1) => `rgba(255, 255, 255, ${opacity})`,
-                        }}
-                        accessor="amount"
-                        backgroundColor="transparent"
-                        paddingLeft="45"
-                        absolute
-                        hasLegend={false}
-                        style={styles.pieChart}
-                        avoidFalseZero
-                      />
-                    </View>
+                </TouchableOpacity>
+                <Text style={styles.netWorthTitle}>6-MONTH EXPENSE</Text>
+                <TouchableOpacity
+                  onPress={() => {
+                    setSelectedChartType('expense');
+                    setShowCategoryModal(true);
+                  }}
+                >
+                  <View style={styles.pieChartWrapper}>
+                    <View style={styles.pieChartRow}>
+                      <View style={{
+                        ...styles.chartContainer,
+                        alignItems: 'flex-start',
+                        paddingRight: 20,
+                      }}>
+                        <PieChart
+                          data={calculateExpenseCategories()}
+                          width={Dimensions.get('window').width * 0.45}
+                          height={220}
+                          chartConfig={{
+                            color: (opacity = 1) => `rgba(255, 255, 255, ${opacity})`,
+                            labelColor: (opacity = 1) => `rgba(255, 255, 255, ${opacity})`,
+                          }}
+                          accessor="amount"
+                          backgroundColor="transparent"
+                          paddingLeft="45"
+                          absolute
+                          hasLegend={false}
+                          style={styles.pieChart}
+                          avoidFalseZero
+                        />
+                      </View>
 
-                    <View style={styles.legendContainer}>
-                      {calculateExpenseCategories().map((item, index) => (
-                        <View key={index} style={styles.legendItem}>
-                          <View style={{ ...styles.legendColor, backgroundColor: item.color }} />
-                          <Text style={styles.legendText}>
-                            {item.name}: {item.percentage.toFixed(1)}%
-                          </Text>
-                        </View>
-                      ))}
+                      <View style={styles.legendContainer}>
+                        {calculateExpenseCategories().map((item, index) => (
+                          <View key={index} style={styles.legendItem}>
+                            <View style={{ ...styles.legendColor, backgroundColor: item.color }} />
+                            <Text style={styles.legendText}>
+                              {item.name}: {item.percentage.toFixed(1)}%
+                            </Text>
+                          </View>
+                        ))}
+                      </View>
                     </View>
                   </View>
-                </View>
+                </TouchableOpacity>
               </View>
             </>
           )}
@@ -1834,6 +1909,93 @@ Message Preview:
 
         </View>
       </ScrollView>
+      <Modal
+        visible={showCategoryModal}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setShowCategoryModal(false)}
+      >
+        <View style={styles.popupContainer}>
+          <View style={[styles.popupContent, { maxHeight: '100%' }]}>
+            <TouchableOpacity
+              style={styles.closeButton}
+              onPress={() => setShowCategoryModal(false)}
+            >
+              <Text style={styles.closeButtonText}>✕</Text>
+            </TouchableOpacity>
+
+            <Text style={[styles.netWorthTitle, { marginBottom: 15, marginTop: -20, fontSize: 20 }]}>
+              {selectedChartType.toUpperCase()} CATEGORY
+            </Text>
+
+            <ScrollView
+              style={styles.categoryScrollView}
+              showsVerticalScrollIndicator={false}
+            >
+              {(selectedChartType === 'income'
+                ? calculateIncomeCategories()
+                : calculateExpenseCategories()).map((item, index) => (
+                  <View key={`${selectedChartType}-${index}`}>
+                    {/* Main Category Item */}
+                    <View style={styles.categoryItem}>
+                      <View style={styles.categoryDetails}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                          <View style={[styles.legendColor, {
+                            backgroundColor: item.color,
+                            opacity: item.isMain ? 1 : 0.6,
+                          }]} />
+                          <Text style={[styles.categoryName, { color: 'white' }]}>
+                            {item.name}
+                            {!item.isMain}
+                          </Text>
+                        </View>
+                        <View style={{ flexDirection: 'row', alignItems: 'baseline' }}>
+                          <Text style={[styles.categoryAmount, {
+                            marginLeft: 90,
+                            color: selectedChartType === 'income' ? '#4CAF50' : '#E53935' // Added conditional color
+                          }]}>
+                            {formatCurrency(item.amount)}
+                          </Text>
+                          <Text style={styles.categoryPercentage}>
+                            ({item.percentage.toFixed(1)}%)
+                          </Text>
+                        </View>
+                      </View>
+                    </View>
+
+                    {/* Subcategories for "Other" */}
+                    {isOtherCategory(item) && (
+                      <View style={styles.otherCategoriesContainer}>
+                        {item.subCategories?.map((subItem, subIndex) => (
+                          <View key={subIndex} style={[styles.subCategoryItem]}>
+                            <View style={[styles.legendColor, {
+                              backgroundColor: item.color,
+                              opacity: 0.4,
+                              marginLeft: 0,
+                            }]} />
+                            <View style={styles.subCategoryDetails}>
+                              <Text style={[styles.subCategoryName, { marginLeft: -2 }]}>
+                                {subItem.name}
+                              </Text>
+                              <Text style={styles.subCategoryAmount}>
+                                <Text style={{ color: selectedChartType === 'income' ? '#4CAF50' : '#E53935' }}>
+                                  {formatCurrency(subItem.amount)}
+                                </Text>
+                                <Text style={{ color: '#a8aeaa' }}>
+                                  {' '}({subItem.percentage.toFixed(1)}%)
+                                </Text>
+                              </Text>
+                            </View>
+                          </View>
+                        ))}
+                      </View>
+                    )}
+                  </View>
+                ))}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
       <Modal
         visible={showPopup}
         transparent={true}
@@ -1986,7 +2148,7 @@ Message Preview:
 
                 // Create new transaction with proper date format
                 const newTransaction: Transaction = {
-                  date: new Date(date).toISOString().split('T')[0],
+                  date: formattedDate,
                   type: transactionType,
                   category: selectedCategory,
                   amount: transactionType === "income"
@@ -2142,6 +2304,41 @@ Message Preview:
 const screenWidth = Dimensions.get('window').width;
 
 const styles = StyleSheet.create({
+  subCategoryDetails: {
+    flex: 1,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginLeft: 8,
+  },
+  otherCategoriesContainer: {
+    marginLeft: 20,
+    borderLeftWidth: 2,
+    borderLeftColor: '#404040',
+    paddingLeft: 10,
+    marginBottom: 10,
+  },
+  subCategoryItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+  },
+  subCategoryName: {
+    color: '#a8aeaa',
+    fontSize: 14,
+    marginLeft: 8,
+    flex: 1,
+  },
+  subCategoryAmount: {
+    color: '#a8aeaa',
+    fontSize: 14,
+    marginLeft: 8,
+  },
+  categoryPercentage: {
+    color: '#a8aeaa',
+    fontSize: 14,
+    marginLeft: 8,
+  },
   smsAlert: {
     position: 'absolute',
     top: 20,
